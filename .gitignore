@@ -6,7 +6,8 @@ backups/
 node_modules/
 
 # Build / packaging output (Electron dist, firmware compiled artifacts)
-release/
+# release/ is tracked (via Git LFS for the large binary/asar) so a fresh
+# clone can run run-rvm.sh without manually copying the bundle.
 dist/
 build/
 bundle/
