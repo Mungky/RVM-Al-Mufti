@@ -1,0 +1,57 @@
+{
+  "version": "almufti-production-1.0.8",
+  "date": "2026-10-20",
+  "board": "esp32:esp32:esp32",
+  "core": "3.3.11",
+  "hostFlowTests": "passed",
+  "hardwareTimerTests": "passed",
+  "productionClientTests": {
+    "passed": 23,
+    "failed": 0
+  },
+  "packagedBrowserWorkflowTests": "passed",
+  "classRuleSettingsBrowserTests": "passed",
+  "importCameraBrowserTests": "passed",
+  "esp32Compile": "passed",
+  "hardwareUploaded": false,
+  "hardwareWorkflowTested": false,
+  "realModelAccuracyTested": false,
+  "appWorkflowIntegrated": true,
+  "packagedChangedFiles": [
+    "dist/assets/index-Cahcuz_X.css",
+    "dist/assets/index-DIPzI07i.js",
+    "dist/assets/model-studio.mjs",
+    "dist/assets/production-client.mjs",
+    "firmware/arduino/rvm_production/rvm_production.ino"
+  ],
+  "packagedDiagnosticUnchanged": true,
+  "homeVideoAndProfileScannerUnchanged": true,
+  "maximumAcceptedBottleGrams": 50,
+  "weightRule": "reject mean >50g; exactly 50g eligible with CV approval",
+  "cvRules": {
+    "priority": "rejected class >= rejection confidence overrides accepted bottle",
+    "acceptedUserClasses": [
+      "Aqua 330ml",
+      "Leminerale 600ml"
+    ],
+    "rejectedUserClasses": [
+      "tutup botol"
+    ],
+    "noAcceptedBottle": "reject",
+    "emptyResult": "reject",
+    "separateConfidenceThresholds": true,
+    "missingRejectedClasses": "block session until configured"
+  },
+  "relay2DurationMs": 20000,
+  "intakeSteps": -12000,
+  "acceptedSteps": -12000,
+  "returnMovement": "forward until IR1, timeout 30s",
+  "returnClearDebounceMs": 300,
+  "reset": "motor stop, relay1 on, relay2 off, green blink, fresh tare, totals preserved",
+  "capCounting": "all active session states",
+  "sha256": {
+    "firmware/arduino/rvm_production/rvm_production.ino": "ec4eaae3e51fc5b8de3d762046fcd6ef0808a1a4066c7be55172946a1ee87ed3",
+    "firmware/builds/rvm_production/rvm_production.ino.bin": "73f111d8ca345ca6bd3391734e771cbed4fd597cccb13a8af437299fe162b1c4",
+    "release/linux-unpacked/resources/app.asar": "1a339804e6b0d4dd824c326a68d40aa5ce3aee438bf0ae81ebab696e5f3cf159"
+  }
+}

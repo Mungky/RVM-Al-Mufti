@@ -1,0 +1,39 @@
+{
+  "all-3": {
+    "samples": 72,
+    "rawMin": -976897,
+    "rawMax": 8388607,
+    "validCardFrames": 0,
+    "rfidVersions": [
+      146,
+      151
+    ]
+  },
+  "loadcell-3": {
+    "samples": 68,
+    "rawMin": -6291457,
+    "rawMax": 8388607,
+    "validCardFrames": 0,
+    "rfidVersions": [
+      146
+    ]
+  },
+  "loadcell-10": {
+    "samples": 71,
+    "rawMin": -7864321,
+    "rawMax": -1,
+    "validCardFrames": 0,
+    "rfidVersions": [
+      146
+    ]
+  },
+  "rfid-3": {
+    "samples": 0,
+    "rawMin": null,
+    "rawMax": null,
+    "validCardFrames": 0,
+    "rfidVersions": [
+      146
+    ]
+  }
+}

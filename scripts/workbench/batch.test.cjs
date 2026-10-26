@@ -1,0 +1,23 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+const {createVisionService}=require('./vision.cjs');
+const nativeImage={createFromDataURL:data=>({getSize:()=>({width:1000,height:800}),isEmpty:()=>false,toJPEG:()=>Buffer.from(data.split(',')[1],'base64'),crop:rect=>({toDataURL:()=>`data:image/jpeg;base64,${Buffer.from(JSON.stringify(rect)).toString('base64')}`})})};
+test('Batch persists unlabeled frames, deduplicates, promotes labels retaining group, transfers crop, rejects invalid edits',async()=>{
+ const temp=await fs.mkdtemp(path.join(os.tmpdir(),'rvm-batch-'));const config={workspace:process.cwd(),resources:process.cwd(),userData:temp,nativeImage,emit:()=>{}};
+ const service=createVisionService(config);const group=crypto.randomUUID(),image='data:image/jpeg;base64,'+Buffer.from('frame1').toString('base64');
+ const a=await service.create({name:'Objects',architecture:'yolo26n'}),b=await service.create({name:'PET',architecture:'yolo26n'});await service.addClass({id:a.id,name:'Bottle'});
+ let result=await service.queueFrame({id:a.id,image,group});assert.equal(result.meta.samples.length,0);assert.equal(result.meta.pending.length,1);
+ assert.equal((await service.queueFrame({id:a.id,image,group})).duplicate,true);
+ const reopened=createVisionService(config);assert.equal((await reopened.list()).find(p=>p.id===a.id).pending.length,1);
+ const file=result.meta.pending[0].file;assert.equal(await service.sample({id:a.id,file}),image);
+ await assert.rejects(service.capture({id:a.id,pendingFile:file,boxes:[]}),/label/);
+ const box={classId:0,x:.1,y:.1,w:.5,h:.5};const labeled=await service.capture({id:a.id,pendingFile:file,boxes:[box]});assert.equal(labeled.pending.length,0);assert.equal(labeled.samples[0].group,group);
+ result=await service.cropToQueue({id:a.id,targetId:b.id,file,box});assert.equal(result.meta.pending[0].group,group);assert.equal(result.meta.samples.length,0);
+ const bulk=await service.cropDatasetToQueue({id:a.id,targetId:b.id,classId:0});assert.equal(bulk.added,0);assert.equal(bulk.duplicates,1);
+ assert.deepEqual(JSON.parse(Buffer.from((await service.sample({id:b.id,file:result.meta.pending[0].file})).split(',')[1],'base64')),{x:100,y:80,width:500,height:400});
+ await assert.rejects(service.cropToQueue({id:a.id,targetId:b.id,file,box:{...box,w:.2}}),/kotak/);
+ await assert.rejects(service.sample({id:a.id,file:'../../secret'}),/ditemukan/);
+ await assert.rejects(service.queueFrame({id:a.id,image,group:'../escape'}),/batch/);
+ await assert.rejects(service.predict({id:a.id,image,pipeline:{}}),/dilatih/);
+ const discarded=await service.discardPending({id:b.id,file:result.meta.pending[0].file});assert.equal(discarded.pending.length,0);
+ service.shutdown();reopened.shutdown();await fs.rm(temp,{recursive:true,force:true});
+});

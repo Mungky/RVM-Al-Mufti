@@ -1,0 +1,183 @@
+{
+  "before": {
+    "telemetry_count": 171,
+    "ping_acks": 25,
+    "grams": {
+      "min": -115.610321,
+      "max": 11824.35352,
+      "median": 485.5702209
+    },
+    "loadcellRaw": {
+      "min": -3334433,
+      "max": 8330015,
+      "median": -568857
+    },
+    "rfidResetCount": {
+      "min": 510,
+      "max": 518,
+      "median": 514
+    },
+    "loadcellFactor": {
+      "min": 439.580658,
+      "max": 439.580658,
+      "median": 439.580658
+    },
+    "loadcellOffset": {
+      "min": -553741,
+      "max": -553741,
+      "median": -553741
+    },
+    "rfidUid": {
+      "": 171
+    },
+    "rfidReady": {
+      "False": 28,
+      "True": 143
+    },
+    "rfidStage": {
+      "wake": 145,
+      "health": 21,
+      "select": 5
+    },
+    "rfidStatus": {
+      "1": 156,
+      "4": 4,
+      "3": 11
+    },
+    "rfidSpiHz": {
+      "4000000": 171
+    },
+    "loadcellStable": {
+      "None": 171
+    },
+    "irRaw": {
+      "None": 171
+    },
+    "firmware": {
+      "almufti-diag-1.0.5": 171
+    }
+  },
+  "after": {
+    "telemetry_count": 169,
+    "ping_acks": 25,
+    "grams": {
+      "min": 245.9632568,
+      "max": 1372.993652,
+      "median": 1150.636353
+    },
+    "loadcellRaw": {
+      "min": -2097153,
+      "max": 8388607,
+      "median": -32384
+    },
+    "loadcellSpreadGrams": {
+      "min": 0,
+      "max": 13399.24316,
+      "median": 1367.355469
+    },
+    "rfidResetCount": {
+      "min": 464,
+      "max": 464,
+      "median": 464
+    },
+    "loadcellFactor": {
+      "min": 439.580658,
+      "max": 439.580658,
+      "median": 439.580658
+    },
+    "loadcellOffset": {
+      "min": -553741,
+      "max": -553741,
+      "median": -553741
+    },
+    "rfidUid": {
+      "9DC2FC06": 169
+    },
+    "rfidReady": {
+      "True": 160,
+      "False": 9
+    },
+    "rfidStage": {
+      "wake": 96,
+      "waiting": 65,
+      "health": 8
+    },
+    "rfidStatus": {
+      "1": 104,
+      "3": 65
+    },
+    "rfidSpiHz": {
+      "100000": 169
+    },
+    "loadcellStable": {
+      "False": 169
+    },
+    "irRaw": {
+      "[True, True, True, True]": 169
+    },
+    "firmware": {
+      "almufti-diag-1.1.0": 169
+    }
+  },
+  "empty-final": {
+    "telemetry_count": 169,
+    "ping_acks": 25,
+    "grams": {
+      "min": 610.0383301,
+      "max": 1221.403809,
+      "median": 1173.953491
+    },
+    "loadcellRaw": {
+      "min": -4194305,
+      "max": 8388607,
+      "median": -29977
+    },
+    "loadcellSpreadGrams": {
+      "min": 0,
+      "max": 28607.76367,
+      "median": 4361.197266
+    },
+    "rfidResetCount": {
+      "min": 4,
+      "max": 4,
+      "median": 4
+    },
+    "loadcellFactor": {
+      "min": 439.580658,
+      "max": 439.580658,
+      "median": 439.580658
+    },
+    "loadcellOffset": {
+      "min": -553741,
+      "max": -553741,
+      "median": -553741
+    },
+    "rfidUid": {
+      "9DC2FC06": 169
+    },
+    "rfidReady": {
+      "True": 169
+    },
+    "rfidStage": {
+      "health": 12,
+      "wake": 79,
+      "waiting": 78
+    },
+    "rfidStatus": {
+      "1": 90,
+      "3": 79
+    },
+    "rfidSpiHz": {
+      "100000": 169
+    },
+    "loadcellStable": {
+      "False": 169
+    },
+    "irRaw": {
+      "[True, True, True, True]": 169
+    },
+    "firmware": {
+      "almufti-diag-1.1.0": 169
+    }
+  }
+}

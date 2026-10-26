@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-19",
+  "scope": "multiple accepted classes for single-model CV",
+  "acceptance": "any selected class meeting confidence; empty results rejected",
+  "legacyScalarMigration": "passed",
+  "clientTests": "passed",
+  "multiClassBrowserTests": "passed",
+  "importCameraBrowserTests": "passed",
+  "layoutVerified": [
+    "1024x768",
+    "800x600"
+  ],
+  "changedPackagedFiles": [
+    "dist/assets/index-Cahcuz_X.css",
+    "dist/assets/model-studio.mjs",
+    "dist/assets/production-client.mjs"
+  ],
+  "firmwareUnchanged": true,
+  "homeVideoAndProfileRFIDUnchanged": true,
+  "hardwareOrUserModelTested": false,
+  "sha256": {
+    "release/linux-unpacked/resources/app.asar": "5ffe1705c0e3dceb50983627103450cf0a0162d8e11b96b7d8aa5675d3d2a0c1",
+    "scripts/production/production-client.mjs": "cabc1caff0c86df72e6eacf5bd6fbe68f91ece399f381e4714a05db4080299bd",
+    "scripts/workbench/model-studio.mjs": "d2de76684396b7dba1a8c41d0760110cfe83f17da8c096ed17450f01aed1960c"
+  }
+}

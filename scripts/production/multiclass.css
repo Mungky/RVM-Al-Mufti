@@ -1,0 +1,10 @@
+.production-class-list{min-width:0;margin:0;padding:8px 12px 12px;border:1px solid #dce5d8;border-radius:10px;max-height:240px;overflow-y:auto;background:#fff}
+.production-class-list legend{padding:0 4px;font-size:13px;font-weight:600;color:#54715f}
+.production-class-list label{display:flex;align-items:center;gap:10px;min-height:40px;padding:4px 0;font-size:14px;color:#305e47;cursor:pointer}
+.production-class-list input[type=checkbox]{width:18px;height:18px;min-height:18px;flex:0 0 18px;margin:0;accent-color:#18845e}
+.production-class-list label span{min-width:0;overflow-wrap:anywhere;line-height:1.4}
+.production-class-list input:focus-visible{outline:2px solid #18845e;outline-offset:3px}
+.production-class-list:disabled label{opacity:.55;cursor:default}
+
+.production-rule-lists{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;grid-column:1/-1;min-width:0}
+@media(max-width:800px){.production-rule-lists{grid-template-columns:1fr}}

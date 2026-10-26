@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=RVM Al-Mufti
+Comment=Mulai RVM fullscreen setelah login desktop
+Exec="/home/rvm-prodesk/Documents/RVM-Al-Mufti-Linux-x64/scripts/system-setup/start-rvm-kiosk.sh"
+TryExec=/home/rvm-prodesk/Documents/RVM-Al-Mufti-Linux-x64/scripts/system-setup/start-rvm-kiosk.sh
+Icon=/home/rvm-prodesk/Documents/RVM-Al-Mufti-Linux-x64/icon.png
+Path=/home/rvm-prodesk/Documents/RVM-Al-Mufti-Linux-x64
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
