@@ -60,9 +60,9 @@ void runMove() {
 int main() {
   motorTimer=&timer;
   assert(PRODUCTION_SPEED==3200 && MOTOR_TIMER_HZ==3200000);
-  production.action=ProductionFlow::Backward12000;applyProduction();
+  production.action=ProductionFlow::BackwardSteps;applyProduction();
   assert(timer.alarm==1000 && motorTarget==-12000);runMove();
-  production.action=ProductionFlow::Backward12000;applyProduction();runMove();
+  production.action=ProductionFlow::BackwardSteps;applyProduction();runMove();
   assert(backwardPulses==24000);
   production.active=true; production.state=ProductionFlow::ReturnBottle;
   production.action=ProductionFlow::ForwardUntilIR1;applyProduction();
@@ -78,7 +78,7 @@ int main() {
   assert(relays[0] && !relays[1] && (pinLevels&(1UL<<ENA_PIN))!=0);
   production.tick(5100,false,false);applyProduction();
   production.tick(5399,false,false);applyProduction();assert(production.state==ProductionFlow::WaitRemoval);
-  production.tick(5400,false,false);applyProduction();assert(production.state==ProductionFlow::AwaitBottle);
+  production.tick(5400,false,false);applyProduction();assert(production.state==ProductionFlow::CheckEmpty);
   // Reset during a moving rejection stops immediately and cannot emit further pulses.
   production.action=ProductionFlow::ForwardUntilIR1;applyProduction();
   for(int i=0;i<100;i++)motorTick();
@@ -86,7 +86,7 @@ int main() {
   for(int i=0;i<100;i++)motorTick();
   assert(pulses==resetPulses && !motorMoving() && !timer.running && !motorContinuous);
   assert(relays[0] && !relays[1] && production.state==ProductionFlow::Taring);
-  production.action=ProductionFlow::Backward12000;applyProduction();
+  production.action=ProductionFlow::BackwardSteps;applyProduction();
   for(int i=0;i<100;i++)motorTick();
   production.stop(0);applyProduction();const uint32_t stopped=pulses;
   for(int i=0;i<100;i++)motorTick();

@@ -14,30 +14,31 @@
 
 // Hardware-independent production sequence; also exercised by the host tests.
 struct ProductionFlow {
-  enum State { Standby, Taring, AwaitBottle, Entry, WeighBase, Intake, Inspect, AcceptMove,
+  enum State { Standby, Taring, AwaitBottle, Intake, Inspect, AcceptMove,
                ConfirmDrop, Rearm, SafetyPause, ReturnBottle, WaitRemoval, CheckEmpty, Fault };
-  enum Action { None, ForwardUntilIR1, BackwardUntilClear, BackwardSteps, Pause, Resume, Stop };
+  enum Action { None, ForwardUntilIR1, BackwardSteps, Pause, Resume, Stop };
   State state = Standby, faultFrom = Standby, pausedFrom = Standby;
   Action action = None;
   uint32_t entered = 0, cycle = 0, sampleCount = 0, bottles = 0, caps = 0;
   double sampleTotal = 0;
-  float grams = 0, bottleGrams = 0, refGrams = 0;
+  float grams = 0, bottleGrams = 0, refGrams = 0, measuredGrams = 0;
   long offset = 0;
   float factor = 0;
   bool active = false, finished = false, armed = false, releaseOn = false, releasePaused = false;
   uint32_t releaseStarted = 0, releaseRemaining = 0, clearStarted = 0, moveSteps = 12000;
   bool returnSeen = false, clearTiming = false, resetTare = false;
   bool cvReady = false, accepted = false, weighingDone = false, invalidSample = false;
-  bool weighActive = false;
-  uint32_t weighStarted = 0;
+  uint8_t cvSize = 0; // Bottle size named by CV: 0 = not given, 1 = small (9-12 g), 2 = large (15-18 g).
+  bool weighActive = false, zeroing = false, shredderStarted = false;
+  uint32_t weighStarted = 0, moveRemaining = 0; // moveRemaining is fed from the motor each loop.
   bool capArmed=false, capBusy=false, capCounted=false, capClearTiming=false, capActiveTiming=false;
   uint32_t capStarted=0, capClearStarted=0;
   static constexpr uint32_t RELEASE_MS=20000;
   static constexpr uint32_t RETURN_TIMEOUT_MS=30000;
-  static constexpr uint32_t INTAKE_STEPS=12000, ACCEPT_STEPS=20000;
+  static constexpr uint32_t INTAKE_STEPS=12000, ACCEPT_STEPS=20000, SHREDDER_AT_STEPS=10000;
   static constexpr uint32_t SETTLE_MS=300; // Samples at the start of each window are skipped while the belt settles.
-  static constexpr uint32_t BASE_MS=1000, INSPECT_MS=2000, PAUSE_MS=2000, CONFIRM_MS=1000, CHECK_MS=1000;
-  static constexpr uint32_t ENTRY_CLEAR_MS=100, IR1_CLEAR_MS=300;
+  static constexpr uint32_t INSPECT_MS=2000, PAUSE_MS=2000, CONFIRM_MS=1000, CHECK_MS=1000, ZERO_MS=1000;
+  static constexpr uint32_t IR1_CLEAR_MS=300;
   static constexpr float TOLERANCE_GRAMS=2.0f, EMPTY_GRAMS=4.5f;
   const char *error = "";
   const char *rejectionReason = "";
@@ -61,7 +62,7 @@ struct ProductionFlow {
   }
 
   static const char *stateName(State s) {
-    static const char *names[] = {"standby", "taring", "await_bottle", "entry", "weigh_base",
+    static const char *names[] = {"standby", "taring", "await_bottle",
       "intake", "inspection", "accept_move", "confirm_drop", "rearm", "safety_pause",
       "return_bottle", "wait_removal", "check_empty", "fault"};
     return names[s];
@@ -97,20 +98,27 @@ struct ProductionFlow {
     action = Stop; armed = false; resetCapGate();
     enter(Standby, now);
   }
-  void beginWeigh(uint32_t now) { sampleTotal=0; sampleCount=0; invalidSample=false; weighActive=true; weighStarted=now; }
+  void beginWeigh(uint32_t now) {
+    sampleTotal=0; sampleCount=0; invalidSample=false; weighActive=true; zeroing=false; weighStarted=now;
+  }
+  // Every finished cycle leaves an empty conveyor: re-zero the scale before the next bottle.
+  void awaitBottle(uint32_t now, bool arm) { armed=arm; enter(AwaitBottle,now); beginWeigh(now); zeroing=true; }
   // 0 = still weighing, 1 = average ready in g, -1 = no usable samples.
   int weighResult(uint32_t now, uint32_t windowMs, float &g) {
     if(!weighActive || now-weighStarted<windowMs) return 0;
     weighActive=false;
     if(sampleCount<2 || invalidSample) return -1;
     g=(float)(sampleTotal/sampleCount);
-    return std::isfinite(g) ? 1 : -1;
+    if(!std::isfinite(g)) return -1;
+    measuredGrams=g; return 1;
   }
   bool weighing() const { return state==Taring || weighActive; }
-  static bool knownBottle(float g) { return (g>=9.0f && g<=12.0f) || (g>=15.0f && g<=18.0f); }
-  // IR1 in these states means a hand or a second bottle at the entrance.
+  static uint8_t bottleSize(float g) { return g>=9.0f && g<=12.0f ? 1 : g>=15.0f && g<=18.0f ? 2 : 0; }
+  static bool knownBottle(float g) { return bottleSize(g)!=0; }
+  // IR1 in these states means a hand or a second bottle at the entrance. Intake is excluded:
+  // the moving bottle itself still passes IR1 there.
   bool inSafetyZone() const {
-    return state==Intake || state==Inspect || state==AcceptMove || state==ConfirmDrop || state==Rearm;
+    return state==Inspect || state==AcceptMove || state==ConfirmDrop || state==Rearm;
   }
   void sample(long raw, uint32_t now) {
     if(state == Taring) {
@@ -126,13 +134,13 @@ struct ProductionFlow {
     }
     if(!weighActive || now-weighStarted<SETTLE_MS) return;
     if(raw<=-8388608 || raw>=8388607) { invalidSample = true; return; }
-    sampleTotal += ((double)raw-offset)/factor;
+    sampleTotal += zeroing ? (double)raw : ((double)raw-offset)/factor;
     sampleCount++;
   }
-  bool decision(uint32_t id, bool ok) {
+  bool decision(uint32_t id, bool ok, uint8_t size=0) {
     const bool inspecting = state==Inspect || (state==SafetyPause && pausedFrom==Inspect);
-    if(!inspecting || id != cycle || cvReady) return false;
-    cvReady = true; accepted = ok; return true;
+    if(!inspecting || id != cycle || cvReady || size>2) return false;
+    cvReady = true; accepted = ok; cvSize = size; return true;
   }
   // Every anomaly ends here: no credit, shredder off, conveyor returns until IR1.
   void startReturn(const char *reason, bool ir1, uint32_t now) {
@@ -148,9 +156,8 @@ struct ProductionFlow {
   void resume(uint32_t now) {
     if(releasePaused) { releaseOn=true; releaseStarted=now-(RELEASE_MS-releaseRemaining); releasePaused=false; }
     const State back=pausedFrom;
-    action=(back==Intake || back==AcceptMove) ? Resume : None;
+    action=back==AcceptMove ? Resume : None;
     enter(back, now);
-    if(back==Inspect) { weighingDone=false; beginWeigh(now); }
     if(back==ConfirmDrop) beginWeigh(now);
   }
   void tick(uint32_t now, bool ir1, bool moving, bool ir3=false) {
@@ -164,43 +171,45 @@ struct ProductionFlow {
         if(now-entered>=9000) fail("tare_timeout", now);
         break;
       case AwaitBottle:
+        if(zeroing && ir1) { zeroing=false; weighActive=false; } // A bottle came first: keep the previous zero.
+        else if(zeroing && now-weighStarted>=ZERO_MS) {
+          zeroing=false; weighActive=false;
+          if(sampleCount>=2 && !invalidSample) offset=(long)(sampleTotal/sampleCount);
+        }
         if(!ir1) armed = true;
-        if(armed && ir1) { armed = false; rejectionReason=""; cycle++; action = BackwardUntilClear; enter(Entry, now); }
-        break;
-      case Entry:
-        // Pull until the whole bottle has passed IR1.
-        if(ir1) clearTiming=false;
-        else if(!clearTiming) { clearTiming=true; clearStarted=now; }
-        else if(now-clearStarted>=ENTRY_CLEAR_MS) { action=Stop; enter(WeighBase,now); beginWeigh(now); }
-        break;
-      case WeighBase:
-        if(ir1) { beginWeigh(now); break; } // Restart while something is still at the entrance.
-        result=weighResult(now,BASE_MS,g);
-        if(result<0) fail("weighing_invalid",now);
-        else if(result>0 && !knownBottle(g)) startReturn("weight_out_of_range",ir1,now);
-        else if(result>0) { refGrams=g; bottleGrams=g; moveSteps=INTAKE_STEPS; action=BackwardSteps; enter(Intake,now); }
+        if(armed && ir1) {
+          armed = false; rejectionReason=""; cycle++;
+          moveSteps = INTAKE_STEPS; action = BackwardSteps; enter(Intake, now);
+        }
         break;
       case Intake:
         if(!moving) {
-          cvReady = false; accepted = false; weighingDone = false;
+          cvReady = false; accepted = false; cvSize = 0; weighingDone = false;
           enter(Inspect, now); beginWeigh(now);
         }
         break;
       case Inspect:
+        // The inspection weight is the reference for the rest of the cycle.
         if(!weighingDone) {
           result=weighResult(now,INSPECT_MS,g);
           if(result<0) { fail("weighing_invalid", now); break; }
-          if(result>0) { weighingDone=true; bottleGrams=g; }
+          if(result>0) { weighingDone=true; bottleGrams=g; refGrams=g; }
+          if(result>0 && !knownBottle(g)) { startReturn("weight_out_of_range",ir1,now); break; }
         }
-        if(weighingDone && fabsf(bottleGrams-refGrams)>TOLERANCE_GRAMS) startReturn("weight_changed",ir1,now);
-        else if(weighingDone && cvReady) {
-          if(accepted) {
-            releaseOn = true; releaseStarted = now;
-            moveSteps = ACCEPT_STEPS; action = BackwardSteps; enter(AcceptMove, now);
+        if(weighingDone && cvReady) {
+          // The bottle CV recognised must also weigh like that bottle.
+          if(accepted && cvSize && cvSize!=bottleSize(bottleGrams)) startReturn("weight_class_mismatch",ir1,now);
+          else if(accepted) {
+            shredderStarted = false; moveSteps = moveRemaining = ACCEPT_STEPS;
+            action = BackwardSteps; enter(AcceptMove, now);
           } else startReturn("cv_rejected",ir1,now);
         } else if(now-entered>=30000) fail("cv_timeout", now);
         break;
       case AcceptMove:
+        // The shredder starts halfway through the move and runs 20 s from there.
+        if(!shredderStarted && moveRemaining<=moveSteps-SHREDDER_AT_STEPS) {
+          shredderStarted = true; releaseOn = true; releaseStarted = now;
+        }
         if(!moving) { enter(ConfirmDrop, now); beginWeigh(now); }
         break;
       case ConfirmDrop:
@@ -211,7 +220,7 @@ struct ProductionFlow {
         else if(result>0) startReturn("not_dropped",ir1,now);
         break;
       case Rearm:
-        if(!releaseOn) enter(AwaitBottle, now);
+        if(!releaseOn) awaitBottle(now, false);
         break;
       case SafetyPause:
         // Wait for a clear entrance, then compare the conveyor weight with the reference.
@@ -221,6 +230,11 @@ struct ProductionFlow {
         if(!weighActive) { beginWeigh(now); break; }
         result=weighResult(now,PAUSE_MS,g);
         if(result<0) fail("weighing_invalid",now);
+        else if(result>0 && pausedFrom==Inspect && !weighingDone) {
+          // No reference yet: the weight after the pause becomes the inspection weight.
+          weighingDone=true; bottleGrams=g; refGrams=g; resume(now);
+          if(!knownBottle(g)) startReturn("weight_out_of_range",ir1,now);
+        }
         else if(result>0 && fabsf(g-refGrams)<=TOLERANCE_GRAMS) resume(now);
         else if(result>0) startReturn("safety_weight_changed",ir1,now);
         break;
@@ -242,7 +256,7 @@ struct ProductionFlow {
         if(ir1) { returnSeen=true; weighActive=false; enter(WaitRemoval,now); break; }
         result=weighResult(now,CHECK_MS,g);
         if(result<0) fail("weighing_invalid",now);
-        else if(result>0 && g<EMPTY_GRAMS) { refGrams=0; armed=true; enter(AwaitBottle,now); }
+        else if(result>0 && g<EMPTY_GRAMS) { refGrams=0; awaitBottle(now, true); }
         else if(result>0) startReturn(rejectionReason,ir1,now);
         break;
       default: break;
@@ -289,7 +303,7 @@ void applyProduction();
 
 // Production hardware routines copied from the tested firmware; diagnostic source is untouched.
 // ESP32 core 3.3.11; HX711 by Rob Tillaart 0.6.5; MFRC522 1.4.12.
-const char *FIRMWARE = "almufti-production-1.1.0";
+const char *FIRMWARE = "almufti-production-1.1.1";
 constexpr uint8_t IR_PINS[] = {14, 26, 27};
 constexpr uint8_t RELAY_PINS[] = {15, 33}; // Physical relay 1, then relay 2.
 constexpr uint8_t STEP_PIN = 2, DIR_PIN = 4, ENA_PIN = 25;
@@ -384,6 +398,12 @@ void startMotor(int8_t direction, int32_t target, bool continuous=false) {
   timerAlarm(motorTimer,MOTOR_TIMER_HZ/PRODUCTION_SPEED,true,0);
   if(motorRunning) { timerStart(motorTimer); motorTimerActive=true; }
   else stopMotor();
+}
+uint32_t remainingSteps() {
+  portENTER_CRITICAL(&motorLock);
+  const int32_t left=motorRunning && !motorContinuous ? motorTarget-motorPosition : 0;
+  portEXIT_CRITICAL(&motorLock);
+  return left<0 ? -left : left;
 }
 void pollMotor() {
   if(motorTimerActive && !motorRunning) stopMotor();
@@ -500,7 +520,7 @@ void telemetry() {
   doc["capCounterEnabled"]=production.capEnabled(); doc["capBusy"]=production.capBusy;
   doc["productionError"]=production.error;
   doc["rejectionReason"]=production.rejectionReason;
-  doc["referenceGrams"]=production.refGrams; doc["shredderPaused"]=production.releasePaused;
+  doc["referenceGrams"]=production.refGrams; doc["measuredGrams"]=production.measuredGrams; doc["shredderPaused"]=production.releasePaused;
   doc["pausedFrom"]=production.state==ProductionFlow::SafetyPause?ProductionFlow::stateName(production.pausedFrom):"";
   doc["ledMode"]=production.ledMode(); doc["ledColor"]=production.ledColor();
   doc["ledBrightness"]=production.ledBrightness();
@@ -572,8 +592,10 @@ void handleCommand(const String &line) {
     ack(id,true,"Session stopped; totals preserved."); return;
   }
   if(cmd=="cv_result") {
+    // Optional size: 1 = small bottle, 2 = large bottle; firmware checks it against the weight.
     if(!doc["cycleId"].is<uint32_t>() || !doc["accepted"].is<bool>() ||
-       !production.decision(doc["cycleId"],doc["accepted"])) {
+       (!doc["size"].isNull() && !doc["size"].is<uint8_t>()) ||
+       !production.decision(doc["cycleId"],doc["accepted"],doc["size"] | 0)) {
       ack(id,false,"Hasil CV tidak valid / ID botol kedaluwarsa."); return;
     }
     ack(id,true,"CV decision received."); return;
@@ -617,17 +639,13 @@ void applyProduction() {
   const auto action=production.takeAction();
   if(action==ProductionFlow::Pause) {
     // Remember the unfinished stepped move so Resume can continue it.
-    portENTER_CRITICAL(&motorLock);
-    const int32_t left=motorRunning && !motorContinuous ? motorTarget-motorPosition : 0;
-    portEXIT_CRITICAL(&motorLock);
-    pausedSteps=left<0?-left:left;
+    pausedSteps=remainingSteps();
     stopMotor();
   } else if(action==ProductionFlow::Stop) stopMotor();
   else if(action!=ProductionFlow::None) {
     // Reset logical position at each move; positions represent pulses, not an encoder.
     motorPosition=0;
     if(action==ProductionFlow::ForwardUntilIR1) startMotor(1,0,true);
-    else if(action==ProductionFlow::BackwardUntilClear) startMotor(-1,0,true);
     else if(action==ProductionFlow::BackwardSteps) startMotor(-1,-(int32_t)production.moveSteps);
     else if(action==ProductionFlow::Resume && pausedSteps) startMotor(-1,-(int32_t)pausedSteps);
     if(action==ProductionFlow::Resume) pausedSteps=0;
@@ -637,11 +655,13 @@ void applyProduction() {
 }
 void updateProduction() {
   const auto before=production.state;
+  production.moveRemaining=remainingSteps();
   production.tick(millis(),ir[0],motorMoving(),ir[2]); applyProduction();
   if(production.state!=before) {
     StaticJsonDocument<384> event; event["type"]="production";
     event["state"]=production.name(); event["cycleId"]=production.cycle;
-    event["error"]=production.error; event["rejectionReason"]=production.rejectionReason; send(event);
+    event["error"]=production.error; event["rejectionReason"]=production.rejectionReason;
+    event["measuredGrams"]=production.measuredGrams; send(event);
     // Resuming inspection after a safety pause keeps the camera request already sent.
     if(production.state==ProductionFlow::Inspect && before==ProductionFlow::Intake) {
       StaticJsonDocument<192> request; request["type"]="inspection_request";

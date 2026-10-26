@@ -50,17 +50,16 @@ function createVisionService({workspace,resources,userData,nativeImage,emit,runn
     let buffer='';child.stdout.on('data',chunk=>{buffer+=chunk.toString();let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(line.startsWith('RVM_JSON ')){try{onEvent(JSON.parse(line.slice(9)))}catch{}}}});
     let stderr='';child.stderr.on('data',chunk=>{stderr=(stderr+chunk).slice(-4000)});child.on('error',e=>onClose(-1,e.message));child.on('close',code=>onClose(code,code?stderr:undefined));return child;
   }
+  // Evidence for stale camera frames: keep the last 100 inspection photos.
+  async function keepInspection(bytes,cycle){
+    const folder=path.join(root,'inspections');await fs.mkdir(folder,{recursive:true});
+    const file=path.join(folder,`${new Date().toISOString().replace(/[:.]/g,'-')}-c${cycle}.jpg`);await fs.writeFile(file,bytes);
+    const old=(await fs.readdir(folder)).filter(n=>n.endsWith('.jpg')).sort().slice(0,-100);
+    await Promise.all(old.map(n=>fs.rm(path.join(folder,n),{force:true})));return file;
+  }
   function stopPredictor(){if(predictor){clearTimeout(predictor.timer);predictor.reject?.(Error('Pengujian kamera dihentikan.'));predictor.child?.kill();for(const p of predictor.pending.values()){clearTimeout(p.timer);p.reject(Error('Pengujian kamera dihentikan.'));}predictor=null}}
-  async function predict({id,image,pipeline,timeoutMs=60000}){
+  async function predict({id,image,timeoutMs=60000,save}){
     const meta=await read(id);if(!meta.trained||!meta.classes?.length)throw Error('Model belum siap. Impor file YOLO .pt yang valid.');
-    let stages;
-    if(pipeline){
-      const confidence=pipeline.confidence;if(!Number.isFinite(confidence)||confidence<.25||confidence>1||pipeline.requireNoCap!==true)throw Error('Aturan pipeline tidak valid.');
-      if(new Set(['object','pet','cap'].map(role=>pipeline[role]?.id)).size!==3)throw Error('Pilih tiga model berbeda.');stages={confidence,requireNoCap:true};
-      for(const role of ['object','pet','cap']){const cfg=pipeline[role],m=await read(cfg?.id);if(!m.trained||m.datasetChanged||!Number.isInteger(cfg.classId)||!m.classes[cfg.classId])throw Error('Model/kelas '+role+' belum siap.');stages[role]={path:path.join(directory(cfg.id),'model.pt'),classId:cfg.classId};}
-      if(meta.task==='classify')throw Error('Model objek untuk crop harus model deteksi.');
-      if(pipeline.object.id!==id)throw Error('Model objek tidak sesuai.');
-    }
     const bytes=imageBytes(image);
     if(predictor&&predictor.id!==id)stopPredictor();
     if(!predictor){const p={id,pending:new Map(),child:null,ready:null};predictor=p;
@@ -69,14 +68,15 @@ function createVisionService({workspace,resources,userData,nativeImage,emit,runn
       try {p.child=await launch('predict',id,[],m=>{if(m.kind==='ready'){clearTimeout(p.timer);p.resolve();}else if(m.id){const request=p.pending.get(m.id);if(request){clearTimeout(request.timer);p.pending.delete(m.id);m.kind==='prediction'?request.resolve(m):request.reject(Error(m.message));}}},(code,error)=>{clearTimeout(p.timer);p.reject(Error(error||'Runtime inferensi berhenti.'));for(const request of p.pending.values()){clearTimeout(request.timer);request.reject(Error('Inferensi berhenti.'))}if(predictor===p)predictor=null});if(predictor!==p){p.child.kill();throw Error('Pengujian kamera dihentikan.');}}catch(error){clearTimeout(p.timer);p.reject(error);if(predictor===p)predictor=null;throw error}
     }
     const p=predictor;if(!p)throw Error('Pengujian kamera dihentikan.');await p.ready;if(predictor!==p)throw Error('Pengujian kamera dihentikan.');if(p.pending.size)throw Error('Gambar sebelumnya masih diproses.');const requestId=crypto.randomUUID();const file=path.join(directory(id),'test-frame.jpg');await fs.writeFile(file,bytes);
-    return new Promise((resolve,reject)=>{const timer=Number.isFinite(timeoutMs)&&timeoutMs>0?setTimeout(()=>{p.pending.delete(requestId);stopPredictor();reject(Error('Inferensi timeout.'))},timeoutMs):null;p.pending.set(requestId,{resolve,reject,timer});p.child.stdin.write(JSON.stringify({id:requestId,path:file,pipeline:stages})+'\n')});
+    let saved;if(Number.isInteger(save)){saved=await keepInspection(bytes,save)}
+    return new Promise((resolve,reject)=>{const timer=Number.isFinite(timeoutMs)&&timeoutMs>0?setTimeout(()=>{p.pending.delete(requestId);stopPredictor();reject(Error('Inferensi timeout.'))},timeoutMs):null;p.pending.set(requestId,{resolve:m=>resolve(saved?{...m,saved}:m),reject,timer});p.child.stdin.write(JSON.stringify({id:requestId,path:file})+'\n')});
   }
-  return {status,list,importModel,predict,stopTest:async()=>{stopPredictor();return true},shutdown:()=>stopPredictor()};
+  return {status,list,importModel,predict,shutdown:()=>stopPredictor()};
 }
 function registerVisionIPC({app,ipcMain,nativeImage,dialog,checkSender,getWindow}){
   const workspace=process.env.RVM_WORKSPACE||(app.isPackaged?path.resolve(path.dirname(app.getPath('exe')),'../..'):path.resolve(__dirname,'..'));
   const service=createVisionService({workspace,resources:path.resolve(__dirname,'..'),userData:app.getPath('userData'),nativeImage,emit:state=>{const w=getWindow();if(w&&!w.isDestroyed())w.webContents.send('vision:event',state)}});
-  for(const method of ['status','list','predict','stopTest'])ipcMain.handle('vision:'+method,(event,args)=>{checkSender(event);return service[method](args)});
+  for(const method of ['status','list','predict'])ipcMain.handle('vision:'+method,(event,args)=>{checkSender(event);return service[method](args)});
   ipcMain.handle('vision:importModel',async event=>{checkSender(event);const result=await dialog.showOpenDialog(getWindow(),{title:'Impor model YOLO',filters:[{name:'YOLO PyTorch',extensions:['pt']}],properties:['openFile']});return result.canceled?null:service.importModel(result.filePaths[0]);});
   return service;
 }

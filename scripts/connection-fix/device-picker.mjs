@@ -62,6 +62,8 @@ if (bridge) {
     dismiss.focus();
   }
   bridge.onUpdate(data => {
+    // The "Siapkan" popup lists these devices in its own dropdown.
+    if (document.querySelector('[data-device-inline]')) { close(); return; }
     if (data.closed) { if (token === data.token) close(); return; }
     if (!overlay || token !== data.token) { close(); mount(data); }
     const items = data.items || [];

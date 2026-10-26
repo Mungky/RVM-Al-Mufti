@@ -1,36 +1,37 @@
-export const PRODUCTION_MODEL = 'apage';
-export const DEFAULT_CONFIDENCE = 60;
-export function selectedProductionClasses(settings) {
-  if(settings.productionSingleClasses!==undefined)
-    return Array.isArray(settings.productionSingleClasses)?[...new Set(settings.productionSingleClasses)]:[];
-  return Number.isInteger(settings.productionSingleClass)&&settings.productionSingleClass>=0?[settings.productionSingleClass]:[];
+// One photo per bottle. Sizes match firmware 1.1.1: 1 = Aqua 330ml (9–12 g), 2 = Le Minerale 600ml (15–18 g).
+const SIZES=[[/aqua/i,1],[/le\s*minerale/i,2]];
+const sizeOf=name=>SIZES.find(([pattern])=>pattern.test(name||''))?.[1]||0;
+export const REASONS={
+  accepted:'kelas diterima dikenali',rejected:'kelas ditolak terdeteksi',multiple:'lebih dari satu objek',
+  none:'botol tidak terdeteksi',unknown:'bukan kelas yang diterima',low_confidence:'confidence di bawah minimum',error:'pemeriksaan kamera gagal'
+};
+// Popup "Siapkan" rules; defaults: Aqua/Le Minerale accepted at 70%, caps rejected from 40%.
+export function productionRules(settings={}, classes=[]) {
+  const pick=(value,fallback)=>Array.isArray(value)?[...new Set(value)].filter(id=>Number.isInteger(id)&&classes[id]):classes.map((n,i)=>fallback(n)?i:-1).filter(i=>i>=0);
+  return {
+    accepted:pick(settings.productionSingleClasses,n=>sizeOf(n)>0),
+    rejected:pick(settings.productionRejectedClasses,n=>/tutup/i.test(n)),
+    confidence:Number(settings.productionConfidence??70),
+    rejectConfidence:Number(settings.productionRejectConfidence??40)
+  };
 }
-function validClasses(ids, model) {
-  return ids.length>0 && ids.every(id=>Number.isInteger(id)&&id>=0&&!!model?.classes?.[id]);
+export function validateRules(rules) {
+  if(!rules.accepted.length) throw Error('Pilih minimal satu kelas yang diterima.');
+  if(rules.accepted.some(id=>rules.rejected.includes(id))) throw Error('Kelas yang sama tidak boleh diterima dan ditolak.');
+  if(![rules.confidence,rules.rejectConfidence].every(n=>Number.isFinite(n)&&n>=10&&n<=100)) throw Error('Confidence harus 10–100%.');
 }
-export function selectedRejectedClasses(settings) {
-  return Array.isArray(settings.productionRejectedClasses)?[...new Set(settings.productionRejectedClasses)]:[];
+// A rejected class (e.g. cap) at its threshold rejects; otherwise exactly one object, an accepted class at its threshold.
+export function cvDecision(boxes, classes, rules=productionRules({},classes)) {
+  const minimum=Math.min(rules.confidence,rules.rejectConfidence)/100;
+  const rows=(Array.isArray(boxes)?boxes:[]).filter(b=>Number.isInteger(b.classId)&&classes[b.classId]&&Number.isFinite(b.confidence)&&b.confidence>=minimum&&b.confidence<=1);
+  if(rows.some(b=>rules.rejected.includes(b.classId)&&b.confidence>=rules.rejectConfidence/100)) return {accepted:false,reason:'rejected',size:0};
+  if(rows.length>1) return {accepted:false,reason:'multiple',size:0};
+  if(!rows.length) return {accepted:false,reason:'none',size:0};
+  if(!rules.accepted.includes(rows[0].classId)) return {accepted:false,reason:'unknown',size:0};
+  if(rows[0].confidence<rules.confidence/100) return {accepted:false,reason:'low_confidence',size:0};
+  return {accepted:true,reason:'accepted',size:sizeOf(classes[rows[0].classId])};
 }
-export function validateClassRules(accepted, rejected, model) {
-  if(!validClasses(accepted,model))throw Error('Pilih minimal satu kelas yang diterima untuk model production.');
-  if(!validClasses(rejected,model))throw Error('Pilih minimal satu kelas yang ditolak, misalnya tutup botol. Model harus mengenali kelas tersebut.');
-  if(accepted.some(id=>rejected.includes(id)))throw Error('Kelas yang sama tidak boleh dipilih sebagai diterima dan ditolak.');
-}
-export function bottleDecision(boxes, classes, accepted, rejected, confidence=60, rejectConfidence=confidence) {
-  if(![confidence,rejectConfidence].every(n=>Number.isFinite(n)&&n>=25&&n<=100))return {accepted:false,reason:'confidence_invalid'};
-  if(!accepted?.length||!rejected?.length||accepted.some(id=>rejected.includes(id)))return {accepted:false,reason:'rules_invalid'};
-  const rows=Array.isArray(boxes)?boxes.filter(b=>Number.isInteger(b.classId)&&classes[b.classId]&&Number.isFinite(b.confidence)&&b.confidence>=0&&b.confidence<=1):[];
-  const denied=rows.filter(b=>rejected.includes(b.classId)&&b.confidence>=rejectConfidence/100);
-  if(denied.length)return {accepted:false,reason:'rejected_class',matches:denied};
-  const bottles=rows.filter(b=>accepted.includes(b.classId)&&b.confidence>=confidence/100);
-  return {accepted:bottles.length>0,reason:bottles.length?'bottle_detected':'bottle_not_detected',matches:bottles};
-}
-export function acceptsBottle(boxes, classes, percent=DEFAULT_CONFIDENCE) {
-  if(!Number.isFinite(percent) || percent<25 || percent>100) return false;
-  return Array.isArray(boxes) && boxes.some(box => Number.isInteger(box.classId) &&
-    classes[box.classId] && Number.isFinite(box.confidence) &&
-    box.confidence>=percent/100 && box.confidence<=1);
-}
+const isRejected=(shot,box)=>shot.rules?.rejected.includes(box.classId);
 
 export const ERROR_MESSAGES = {
   weight_not_positive:'Berat botol nol atau negatif. Tekan Reset untuk menghentikan conveyor dan melakukan zero ulang.',
@@ -45,91 +46,82 @@ export const ERROR_MESSAGES = {
 export function errorMessage(code) { return ERROR_MESSAGES[code] || 'Mesin berhenti. Tekan Reset untuk mencoba lagi.'; }
 
 export class ProductionClient {
-  constructor({transport,vision,media=navigator.mediaDevices,document:dom=document,notify=()=>{},log=()=>{},wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))}) {
-    Object.assign(this,{transport,vision,media,dom,notify,log,wait});
+  constructor({transport,vision,media=navigator.mediaDevices,document:dom=document,notify=()=>{},log=()=>{},wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),ImageCaptureClass=globalThis.ImageCapture}) {
+    Object.assign(this,{transport,vision,media,dom,notify,log,wait,ImageCaptureClass});
     this.epoch=0; this.active=false; this.stream=null; this.video=null;
-    this.model=null; this.pendingCycle=null; this.seen=new Set();
+    this.model=null; this.pendingCycle=null; this.seen=new Set(); this.preparing=null; this.lastInspection=null;
     this.ledApplied=''; this.ledWanted=null; this.ledWriting=false;
     this.ledPattern=''; this.ledTimer=null; this.ledOn=true;
     this.settings={}; this.firmware=''; this.lastFault=''; this.lastStage='';
-    this.lastCapCount=0; this.resetOnHome=false; this.restartPromise=null; this.recovering=false;
+    this.lastCapCount=0; this.recovering=false;
   }
-  frame() {
-    const video=this.video;
-    if(!video?.videoWidth) throw Error('Gambar kamera inspeksi belum siap.');
+  async frame() {
+    let source=this.video, bitmap=null;
+    // A <video> that is not in the page can stop updating; grab straight from the camera track.
+    const track=this.stream?.getVideoTracks()[0];
+    if(track && this.ImageCaptureClass) { try { bitmap=await new this.ImageCaptureClass(track).grabFrame(); source=bitmap; } catch {} }
+    const width=bitmap?.width||source?.videoWidth, height=bitmap?.height||source?.videoHeight;
+    if(!width) throw Error('Gambar kamera inspeksi belum siap.');
     const canvas=this.dom.createElement('canvas');
-    const ratio=Math.min(1,1920/Math.max(video.videoWidth,video.videoHeight));
-    canvas.width=Math.round(video.videoWidth*ratio); canvas.height=Math.round(video.videoHeight*ratio);
-    canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+    const ratio=Math.min(1,1920/Math.max(width,height));
+    canvas.width=Math.round(width*ratio); canvas.height=Math.round(height*ratio);
+    canvas.getContext('2d').drawImage(source,0,0,canvas.width,canvas.height);
+    bitmap?.close?.();
     return canvas.toDataURL('image/jpeg',.9);
   }
+  // Camera and YOLO stay open between sessions; returns true when it had to (re)open them.
   async prepare(settings={}) {
     this.settings=settings;
-    if(this.configKey===JSON.stringify(settings) && this.stream && this.model && this.cameraId===(settings.productionCamera||'') &&
-       this.stream.getVideoTracks().every(t=>t.readyState==='live')) return;
+    const key=JSON.stringify([settings.productionSingleModel||'',settings.productionCamera||'']);
+    if(this.preparing?.key===key) return this.preparing.promise;
+    if(this.configKey===key && this.stream && this.model && this.stream.getVideoTracks().every(t=>t.readyState==='live')) return false;
+    const promise=this.open(settings,key);
+    this.preparing={key,promise};
+    try { return await promise; } finally { if(this.preparing?.promise===promise) this.preparing=null; }
+  }
+  async open(settings,key) {
     const epoch=++this.epoch;
-    this.closeCamera(); this.model=null;
+    this.closeCamera(); this.model=null; this.configKey='';
     if(!this.vision || !this.media?.getUserMedia) throw Error('Runtime YOLO atau kamera belum tersedia.');
-    const models=await this.vision.list();
-    this.pipeline=settings.productionVisionMode==='pipeline'?settings.productionPipeline:null;
-    if(settings.productionVisionMode==='pipeline'&&!this.pipeline)throw Error('Pilih tiga model dan kelas production dahulu.');
-    const model=this.pipeline?models.find(m=>m.id===this.pipeline.object?.id):(settings.productionSingleModel?models.find(m=>m.id===settings.productionSingleModel):models.find(m=>m.name.trim().toLowerCase()===PRODUCTION_MODEL));
-    if(!model?.trained || !model.classes?.length) throw Error('Model production belum tersedia atau belum siap. Impor model .pt dahulu.');
-    if(!this.pipeline) {
-      this.acceptedClasses=selectedProductionClasses(settings);
-      this.rejectedClasses=selectedRejectedClasses(settings);
-      validateClassRules(this.acceptedClasses,this.rejectedClasses,model);
-      if(![settings.productionConfidence??60,settings.productionRejectConfidence??settings.productionConfidence??60].every(n=>Number.isFinite(n)&&n>=25&&n<=100))throw Error('Confidence minimum harus 25–100%.');
-    }
-    if(this.pipeline&&model.task==='classify')throw Error('Model objek untuk crop harus model deteksi.');
-    if(this.pipeline)for(const role of ['object','pet','cap']){const cfg=this.pipeline[role],m=models.find(m=>m.id===cfg?.id);if(!m?.trained||m.datasetChanged||!m.classes?.[cfg.classId])throw Error(`Model/kelas ${role} belum siap. Impor model dan pilih kelas dahulu.`);}
-    if(model.datasetChanged) throw Error('Model production belum siap. Impor file .pt yang valid.');
+    const model=(await this.vision.list()).find(m=>m.id===settings.productionSingleModel);
+    if(!model?.trained || !model.classes?.length || model.datasetChanged) throw Error('Model production belum tersedia atau belum siap. Pilih model CV lewat Admin → Production → Siapkan.');
+    validateRules(productionRules(settings,model.classes));
     const stream=await this.media.getUserMedia({video:{width:{ideal:1920},height:{ideal:1080},
       ...(settings.productionCamera?{deviceId:{exact:settings.productionCamera}}:{})},audio:false});
     if(epoch!==this.epoch) { stream.getTracks().forEach(t=>t.stop()); throw Error('Persiapan dibatalkan.'); }
-    this.stream=stream; this.cameraId=settings.productionCamera||'';
+    this.stream=stream;
     this.video=this.dom.createElement('video');
     this.video.muted=true; this.video.playsInline=true; this.video.srcObject=stream;
     try {
       await this.video.play();
       if(epoch!==this.epoch) throw Error('Persiapan dibatalkan.');
       // Load the CPU model before the conveyor starts. This prediction earns no points.
-      await this.vision.predict({id:model.id,image:this.frame(),...(this.pipeline?{pipeline:{...this.pipeline,confidence:(settings.productionConfidence??DEFAULT_CONFIDENCE)/100}}:{})});
+      await this.vision.predict({id:model.id,image:await this.frame()});
       if(epoch!==this.epoch) throw Error('Persiapan dibatalkan.');
-      this.model=model;this.configKey=JSON.stringify(settings); this.log(`Production siap: ${this.pipeline?'objek → PET → tutup':model.name} · ${model.classes.join(', ')}.`);
+      this.model=model; this.configKey=key; this.log(`Kamera & model siap: ${model.name} · ${model.classes.join(', ')}.`);
+      return true;
     } catch(error) { if(epoch===this.epoch) this.closeCamera(); throw error; }
   }
+  // Home screen / app start: keep camera and YOLO hot; respawns YOLO if something else stopped it.
+  async warm(settings) {
+    if(this.active || !settings?.productionSingleModel) return;
+    if(!await this.prepare(settings) && !this.active) await this.vision.predict({id:this.model.id,image:await this.frame()});
+  }
   async start(uid,settings) {
-    if(this.restartPromise) await this.restartPromise;
-    const ping=await this.transport.command('ping');
+    const t0=Date.now(),laps=[],lap=name=>laps.push(`${name} ${Date.now()-t0}`);
+    const ping=await this.transport.command('ping'); lap('ping');
     if(!/^almufti-production-1\./.test(ping.firmware||''))
-      throw Error('Upload firmware production dahulu melalui Admin → Script.');
-    await this.prepare(settings);
+      throw Error('Siapkan mode production dahulu lewat Admin → Production → Siapkan.');
+    await this.prepare(settings); lap('kamera+model');
     let baseline;
-    try { baseline=await this.transport.command('session_start',{uid}); }
+    try { baseline=await this.transport.command('session_start',{uid}); lap('session_start'); }
     catch(error) { this.disconnect(); throw error; }
-    this.lastCapCount=baseline.caps||0; this.active=true; this.seen.clear(); this.pendingCycle=null; this.lastFault=''; this.lastStage=''; this.recovering=false;
+    this.log(`Waktu siap ${Date.now()-t0} ms (kumulatif: ${laps.join(' · ')} ms).`);
+    this.lastCapCount=baseline.caps||0; this.active=true; this.seen.clear(); this.pendingCycle=null; this.lastFault=''; this.lastStage=''; this.recovering=false; this.lastInspection=null;
     return baseline;
   }
   async rearmRFID() {
-    if(this.restartPromise) return this.restartPromise;
-    if(!this.active && /^almufti-production-1\./.test(this.firmware)) {
-      if(this.resetOnHome) {
-        this.restartPromise=this.restartEsp().finally(()=>{this.restartPromise=null;});
-        return this.restartPromise;
-      }
-      await this.transport.command('rfid_arm');
-    }
-  }
-  async restartEsp() {
-    this.disconnect(); this.log('Reset ESP32 — kembali ke posisi hitungan awal.');
-    await this.transport.command('controller_reset');
-    this.resetOnHome=false;
-    await this.wait(2200);
-    const ready=await this.transport.command('ping');
-    if(!/^almufti-production-1\./.test(ready.firmware||'')) throw Error('ESP32 belum siap setelah reset.');
-    this.log('ESP32 siap untuk pengguna berikutnya.');
-    await this.transport.command('rfid_arm');
+    if(!this.active && /^almufti-production-1\./.test(this.firmware)) await this.transport.command('rfid_arm');
   }
   async reset(settings) {
     this.active=false; this.epoch++; this.pendingCycle=null;
@@ -155,16 +147,14 @@ export class ProductionClient {
   async stop() {
     // Discard late inference even when the stop ACK fails; firmware lease still protects hardware.
     this.active=false; this.epoch++; this.pendingCycle=null;
-    try { const result=await this.transport.command('session_stop'); this.resetOnHome=true; this.log('Sesi selesai — total setoran disimpan.'); return result; }
-    finally { this.closeCamera(); this.model=null; this.vision?.stopTest().catch(()=>{}); }
+    const result=await this.transport.command('session_stop'); this.log('Sesi selesai — total setoran disimpan.'); return result;
   }
   closeCamera() {
     this.stream?.getTracks().forEach(t=>t.stop()); this.stream=null;
     if(this.video) { this.video.srcObject=null; this.video=null; }
   }
   disconnect() {
-    this.active=false; this.epoch++; this.pendingCycle=null; this.closeCamera(); this.model=null;
-    this.vision?.stopTest().catch(()=>{});
+    this.active=false; this.epoch++; this.pendingCycle=null;
   }
   observe(event,settings) {
     this.settings=settings||this.settings;
@@ -196,18 +186,21 @@ export class ProductionClient {
     const key=`${cycle??''}:${state}`;
     if(this.lastStage===key) return;
     this.lastStage=key;
+    const returned=`Silakan ambil botol Anda.${({
+      weight_out_of_range:' Jenis botol tidak dikenali.',weight_changed:' Terdeteksi benda tambahan, masukkan satu per satu.',
+      safety_weight_changed:' Terdeteksi benda tambahan, masukkan satu per satu.',not_dropped:' Botol tidak masuk, silakan coba lagi.',
+      weight_class_mismatch:' Ukuran botol tidak sesuai beratnya.',cv_rejected:' Botol ditolak kamera.'
+    })[reason]||''}`;
     const messages={
       taring:'Zero timbangan — mengambil sampel baru.',
-      await_bottle:'Siap menerima botol berikutnya.',
-      intake:'Conveyor reverse — botol menuju inspeksi.',
-      inspection:'Conveyor berhenti — CV dan penimbangan 2 detik.',
-      entry:'Memeriksa botol…',
-      weigh_base:'Memeriksa botol…',
-      accept_move:'Botol diterima — Conveyor reverse 20000 step; relay 2 aktif 20 detik, LED kuning berkedip. Tunggu sebelum memasukkan botol berikutnya.',
+      await_bottle:reason==='no_bottle'?'Tidak ada botol di conveyor — siap menerima botol berikutnya.':'Siap menerima botol berikutnya.',
+      intake:'Conveyor reverse 12000 step — botol menuju inspeksi.',
+      inspection:'Conveyor berhenti — 1 foto CV dan penimbangan 2 detik.',
+      accept_move:'Botol diterima — Conveyor reverse 20000 step; relay 2 aktif di step 10000 selama 20 detik, LED kuning berkedip. Tunggu sebelum memasukkan botol berikutnya.',
       confirm_drop:'Memastikan botol masuk…',
       safety_pause:'Jauhkan tangan dari lubang botol.',
-      return_bottle:`Silakan ambil botol Anda.${reason==='weight_out_of_range'?' Jenis botol tidak dikenali.':''}${['weight_changed','safety_weight_changed'].includes(reason)?' Terdeteksi benda tambahan, masukkan satu per satu.':''}${reason==='not_dropped'?' Botol tidak masuk, silakan coba lagi.':''}`,
-      wait_removal:`Silakan ambil botol Anda.${reason==='weight_out_of_range'?' Jenis botol tidak dikenali.':''}${['weight_changed','safety_weight_changed'].includes(reason)?' Terdeteksi benda tambahan, masukkan satu per satu.':''}${reason==='not_dropped'?' Botol tidak masuk, silakan coba lagi.':''}`,
+      return_bottle:returned,
+      wait_removal:returned,
       check_empty:'Memastikan conveyor kosong…',
       rearm:'Conveyor berhenti — menunggu area masuk kosong.',
       fault:errorMessage(error)
@@ -217,27 +210,36 @@ export class ProductionClient {
   }
   async inspect(event) {
     if(!Number.isInteger(event.cycleId) || this.seen.has(event.cycleId) || this.pendingCycle!==null) return;
-    const epoch=this.epoch, id=event.cycleId;
+    const epoch=this.epoch, id=event.cycleId, stale=()=>epoch!==this.epoch || !this.active;
     this.seen.add(id); this.pendingCycle=id;
     try {
-      const result=await this.vision.predict({id:this.model.id,image:this.frame(),timeoutMs:0,...(this.pipeline?{pipeline:{...this.pipeline,confidence:(this.settings.productionConfidence??DEFAULT_CONFIDENCE)/100}}:{})});
-      if(epoch!==this.epoch || !this.active) return;
+      let result={boxes:[]}, image='', decision, rules=null;
+      try {
+        await this.wait(500); // The conveyor just stopped: let the bottle settle, then take one photo.
+        if(stale()) return;
+        image=await this.frame();
+        result=await this.vision.predict({id:this.model.id,image,timeoutMs:10000,save:id});
+        rules=productionRules(this.settings,this.model.classes);
+        decision=cvDecision(result.boxes,this.model.classes,rules);
+      } catch(error) {
+        if(stale()) return;
+        // Never motor_stop here: that faults the ESP. A failed check is a rejection.
+        decision={accepted:false,reason:'error',size:0};
+        this.notify(`CV gagal: ${error.message}. Botol ditolak.`); this.log(`CV gagal: ${error.message}`);
+      }
+      if(stale()) return;
       if(this.controllerCycle===id && !['inspection','safety_pause'].includes(this.controllerState)) return;
-      const confidence=this.settings.productionConfidence??DEFAULT_CONFIDENCE;
-      const decision=this.pipeline?{accepted:result.accepted===true,reason:'pipeline'}:bottleDecision(result.boxes,this.model.classes,this.acceptedClasses,this.rejectedClasses,confidence,this.settings.productionRejectConfidence??confidence);
-      const accepted=decision.accepted;
-      await this.transport.command('cv_result',{cycleId:id,accepted});
-      const reason=({rejected_class:'kelas ditolak terdeteksi (tutup)',bottle_not_detected:'botol tidak terdeteksi pada confidence minimum',bottle_detected:'botol terdeteksi tanpa kelas penolakan',confidence_invalid:'confidence tidak valid'})[decision.reason]||'pipeline PET + tutup';
-      const detections=Array.isArray(result.boxes)?result.boxes.filter(b=>this.model.classes[b.classId]&&Number.isFinite(b.confidence)).map(b=>`${this.model.classes[b.classId]} ${Math.round(b.confidence*100)}%`).join(', '):'';
-      this.log(`Hasil CV botol ${id}: ${accepted?'DITERIMA':'DITOLAK'} — ${reason} · ${this.model.name} · minimum botol ${confidence}%, penolakan ${this.settings.productionRejectConfidence??confidence}% · ${detections||'hasil kosong'}.`);
-    } catch(error) {
-      if(epoch!==this.epoch || !this.active) return;
-      // Weight rejection may already have returned the bottle before inference finishes.
-      if(/Hasil CV tidak valid \/ ID botol kedaluwarsa/.test(error.message)) return;
-      this.notify(`CV gagal: ${error.message}. Sesi dihentikan.`); this.log(`CV gagal: ${error.message}`);
-      // A camera/runtime error is not a visual rejection. Stop, never credit guessed results.
-      this.active=false; this.epoch++; this.closeCamera(); this.model=null;
-      await this.transport.command('motor_stop').catch(()=>{});
+      const classes=this.model.classes;
+      this.lastInspection={cycleId:id,image,boxes:Array.isArray(result.boxes)?result.boxes:[],classes,rules,...decision};
+      try { await this.transport.command('cv_result',{cycleId:id,accepted:decision.accepted,size:decision.size}); }
+      catch(error) {
+        // Weight rejection may already have returned the bottle before inference finishes.
+        if(!/Hasil CV tidak valid \/ ID botol kedaluwarsa/.test(error.message)) this.log(`cv_result gagal: ${error.message}`);
+        return;
+      }
+      const detections=this.lastInspection.boxes.filter(b=>classes[b.classId]&&Number.isFinite(b.confidence)).map(b=>`${classes[b.classId]} ${Math.round(b.confidence*100)}%`).join(', ');
+      if(result.saved) this.log(`Foto inspeksi ${id}: ${result.saved}`);
+      this.log(`Hasil CV botol ${id}: ${decision.accepted?'DITERIMA':'DITOLAK'} — ${REASONS[decision.reason]} · ${detections||'tidak ada deteksi'}.`);
     } finally { if(this.pendingCycle===id) this.pendingCycle=null; }
   }
   setLedTarget(target) {
@@ -271,60 +273,30 @@ export class ProductionClient {
   }
 }
 
-export function createProductionSettings(React) {
-  const h=React.createElement;
-  return function ProductionSettings({db,updateDB,notify,serial,telemetry}) {
-    const [cameras,setCameras]=React.useState([]),[camera,setCamera]=React.useState(db.settings.productionCamera||'');
-    const [confidence,setConfidence]=React.useState(db.settings.productionConfidence??DEFAULT_CONFIDENCE);
-    const [rejectConfidence,setRejectConfidence]=React.useState(db.settings.productionRejectConfidence??db.settings.productionConfidence??DEFAULT_CONFIDENCE),[rejectedClasses,setRejectedClasses]=React.useState(()=>selectedRejectedClasses(db.settings));
-    const [mode,setMode]=React.useState(db.settings.productionVisionMode||'single'),[models,setModels]=React.useState([]);
-    const [singleModel,setSingleModel]=React.useState(db.settings.productionSingleModel||''),[singleClasses,setSingleClasses]=React.useState(()=>selectedProductionClasses(db.settings));
-    const [pipeline,setPipeline]=React.useState(db.settings.productionPipeline||{object:{id:'',classId:-1},pet:{id:'',classId:-1},cap:{id:'',classId:-1},requireNoCap:true});
-    const [busy,setBusy]=React.useState(false);
-    React.useEffect(()=>{window.rvm?.vision?.list().then(items=>{setModels(items);if(!db.settings.productionSingleModel){const legacy=items.find(m=>m.name.trim().toLowerCase()===PRODUCTION_MODEL);if(legacy){setSingleModel(legacy.id);if(legacy.classes.length===1&&db.settings.productionSingleClasses===undefined)setSingleClasses([0]);}}}).catch(()=>{});},[]);
-    React.useEffect(()=>{navigator.mediaDevices?.enumerateDevices().then(devices=>setCameras(devices.filter(d=>d.kind==='videoinput'))).catch(()=>{});},[]);
-    async function save() {
-      setBusy(true);
-      try { if(mode==='single'){const m=models.find(m=>m.id===singleModel);if(!m?.trained||m.datasetChanged)throw Error('Pilih model siap pakai.');validateClassRules(singleClasses,rejectedClasses,m);}if(mode==='pipeline')for(const role of ['object','pet','cap']){const cfg=pipeline[role],m=models.find(m=>m.id===cfg.id);if(!m?.trained||m.datasetChanged||!m.classes?.[cfg.classId])throw Error(`Pilih model ${role} yang siap pakai dan kelas yang cocok.`);}await updateDB(old=>({...old,settings:{...old.settings,productionCamera:camera,productionConfidence:Number(confidence),productionRejectConfidence:Number(rejectConfidence),productionRejectedClasses:rejectedClasses,productionVisionMode:mode,productionSingleModel:singleModel,productionSingleClasses:singleClasses,productionSingleClass:singleClasses[0]??-1,productionPipeline:{...pipeline,requireNoCap:true}}})); notify('Pengaturan production disimpan.'); }
-      catch(e) { notify(e.message); } finally { setBusy(false); }
-    }
-    return h('section',{className:'card production-settings'},
-      h('div',{className:'card-heading'},h('div',null,h('h3',null,'Production'),h('p',null,'Pilihan CV production · kelas diterima · kartu terdaftar'))),
-      h('p',null,serial?`ESP32: ${telemetry.firmware||'terhubung'}`:'Hubungkan ESP32 dan LED melalui tombol di atas.'),
-      h('div',{className:'production-fields'},
-        h('label',{className:'field'},h('span',null,'Kamera inspeksi'),h('select',{value:camera,onChange:e=>setCamera(e.target.value)},
-          h('option',{value:''},'Kamera default'),cameras.map((device,i)=>h('option',{key:device.deviceId||i,value:device.deviceId},device.label||`Kamera ${i+1}`)))),
-        h('label',{className:'field'},h('span',null,'Confidence minimum (%)'),h('input',{type:'number',min:25,max:100,value:confidence,onChange:e=>setConfidence(e.target.value)}))),
-      h('label',{className:'field'},h('span',null,'Alur CV'),h('select',{'aria-label':'Alur CV',value:mode,onChange:e=>setMode(e.target.value)},h('option',{value:'single'},'Satu model (pilih model sendiri)'),h('option',{value:'pipeline'},'Tiga model: objek → PET → tutup'))),
-      mode==='single'&&h('div',{className:'production-fields'},
-        h('label',{className:'field'},h('span',null,'Model production'),h('select',{'aria-label':'Model production',value:singleModel,onChange:e=>{setSingleModel(e.target.value);setSingleClasses([]);setRejectedClasses([]);}},h('option',{value:''},'Pilih model…'),models.map(m=>h('option',{key:m.id,value:m.id,disabled:!m.trained||m.datasetChanged},`${m.name}${m.trained&&!m.datasetChanged?'':' · belum siap'}`)))),
-        h('div',{className:'production-rule-lists'},
-          h('fieldset',{className:'production-class-list'},h('legend',null,'Kelas yang diterima'),
-            models.find(m=>m.id===singleModel)?.classes.map((name,i)=>h('label',{key:i},h('input',{type:'checkbox',checked:singleClasses.includes(i),onChange:e=>{setSingleClasses(old=>e.target.checked?[...old,i]:old.filter(id=>id!==i));if(e.target.checked)setRejectedClasses(old=>old.filter(id=>id!==i));}}),h('span',null,name)))),
-          h('fieldset',{className:'production-class-list'},h('legend',null,'Kelas yang ditolak'),
-            models.find(m=>m.id===singleModel)?.classes.map((name,i)=>h('label',{key:i},h('input',{type:'checkbox',checked:rejectedClasses.includes(i),onChange:e=>{setRejectedClasses(old=>e.target.checked?[...old,i]:old.filter(id=>id!==i));if(e.target.checked)setSingleClasses(old=>old.filter(id=>id!==i));}}),h('span',null,name)))))),
-      mode==='single'&&h('label',{className:'field'},h('span',null,'Confidence penolakan minimum (%)'),h('input',{type:'number',min:25,max:100,value:rejectConfidence,onChange:e=>setRejectConfidence(e.target.value)})),
-      mode==='single'&&h('p',{className:'muted'},'Pilih Aqua/Le Minerale sebagai diterima dan tutup botol sebagai ditolak. Kelas ditolak diprioritaskan meskipun botol terdeteksi. Tanpa botol yang memenuhi confidence minimum, hasil ditolak. Kelas tutup di bawah ambang penolakan belum dianggap terdeteksi.'),
-      mode==='pipeline'&&h('div',{className:'studio-step'},
-        ['object','pet','cap'].map(role=>{
-          const cfg=pipeline[role],model=models.find(m=>m.id===cfg.id);
-          return h('div',{className:'studio-inline',key:role},
-            h('label',{className:'field'},h('span',null,({object:'Deteksi objek untuk crop',pet:'Identifikasi PET',cap:'Kondisi tutup'})[role]),
-              h('select',{'aria-label':({object:'Model objek',pet:'Model PET',cap:'Model kondisi tutup'})[role],value:cfg.id,onChange:e=>setPipeline(old=>({...old,[role]:{id:e.target.value,classId:-1}}))},h('option',{value:''},'Pilih model…'),models.map(m=>h('option',{key:m.id,value:m.id},`${m.name}${m.trained&&!m.datasetChanged?'':' · belum siap'}`)))),
-            h('label',{className:'field'},h('span',null,role==='cap'?'Kelas TANPA TUTUP':'Kelas yang dianggap cocok'),
-              h('select',{'aria-label':({object:'Kelas objek',pet:'Kelas PET',cap:'Kelas tanpa tutup'})[role],value:cfg.classId,onChange:e=>setPipeline(old=>({...old,[role]:{...old[role],classId:Number(e.target.value)}}))},h('option',{value:-1},'Pilih kelas…'),model?.classes.map((name,i)=>h('option',{key:i,value:i},name)))));
-        }),h('p',null,'Aturan: hanya PET tanpa tutup diterima. Untuk model kondisi tutup, impor model yang mengenali tanpa tutup dan dengan tutup pada crop botol. Pilih kelas tanpa tutup sebagai kelas yang diterima. Hasil kosong ditolak.')),
-      h('button',{className:'button',type:'button',onClick:save,disabled:busy||!Number.isFinite(Number(confidence))||Number(confidence)<25||Number(confidence)>100||(mode==='single'&&(!Number.isFinite(Number(rejectConfidence))||Number(rejectConfidence)<25||Number(rejectConfidence)>100))},'Simpan pengaturan production'),
-      h('p',{className:'muted'},'Kembali ke layar utama lalu scan kartu. Kamera dan model disiapkan sebelum sesi dimulai.'));
-  };
+// "Selesai menyetor" only between bottles; an unattended session ends itself so the next person never deposits into it.
+export const FINISHABLE=['await_bottle','wait_removal','fault'];
+export const IDLE_MS=120000, IDLE_WARNING_MS=30000;
+export function sessionHint(telemetry,serial,idleMs) {
+  const state=telemetry.productionState, shredder=telemetry.shredderRemainingMs;
+  if(!serial) return '';
+  if(idleMs>=IDLE_MS-IDLE_WARNING_MS) return `Tidak ada aktivitas — sesi selesai otomatis dalam ${Math.max(0,Math.ceil((IDLE_MS-idleMs)/1000))} detik.`;
+  if(['accept_move','confirm_drop','rearm'].includes(state) && shredder>0) return `Pencacah berjalan — botol berikutnya bisa dimasukkan dalam ±${Math.ceil(shredder/1000)+1} detik.`;
+  if(state && !FINISHABLE.includes(state)) return 'Botol sedang diproses. Tombol Selesai aktif setelah selesai.';
+  return '';
 }
-
-
 export function createSessionTools(React) {
   const h=React.createElement;
-  return function SessionTools({client,telemetry,settings,logs,serial,notify,onBusy}) {
-    const [busy,setBusy]=React.useState(false);
-    const fault=telemetry.productionState==='fault';
+  return function SessionTools({client,telemetry,settings,logs,serial,notify,onBusy,finish}) {
+    const [busy,setBusy]=React.useState(false),[now,setNow]=React.useState(()=>Date.now());
+    const lastActivity=React.useRef(Date.now());
+    const state=telemetry.productionState, fault=state==='fault';
+    // Any deposit, cap or machine step restarts the idle timer.
+    React.useEffect(()=>{lastActivity.current=Date.now();},[telemetry.grams,telemetry.caps,state]);
+    React.useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[]);
+    const idleMs=serial&&['await_bottle','wait_removal'].includes(state)?now-lastActivity.current:0, expired=idleMs>=IDLE_MS;
+    React.useEffect(()=>{if(expired)finish?.();},[expired]);
+    const hint=sessionHint(telemetry,serial,idleMs);
+    const shot=client.lastInspection;
     async function reset() {
       if(busy) return;
       setBusy(true); onBusy(true);
@@ -334,8 +306,17 @@ export function createSessionTools(React) {
     }
     return h('section',{className:'session-tools'},
       h('div',{className:'session-recovery'},
-        h('p',{role:fault?'alert':undefined},fault?errorMessage(telemetry.productionError):'Reset: conveyor berhenti, relay 1 ON, relay 2 OFF, LED hijau berkedip, dan zero timbangan.'),
+        h('p',{role:fault?'alert':'status'},fault?errorMessage(telemetry.productionError):hint||'Reset: conveyor berhenti, relay 1 ON, relay 2 OFF, LED hijau berkedip, dan zero timbangan.'),
         h('button',{type:'button',className:'button secondary',onClick:reset,disabled:busy||client.recovering||!serial},busy?'Menyiapkan Reset…':'Reset')),
+      shot&&h('figure',{className:'inspection-shot'},
+        shot.image&&h('div',{className:'inspection-frame'},
+          h('img',{src:shot.image,alt:`Foto inspeksi botol ${shot.cycleId}`}),
+          h('svg',{viewBox:'0 0 1000 1000',preserveAspectRatio:'none','aria-hidden':true},shot.boxes.map((b,i)=>{
+            const color=isRejected(shot,b)?'#e5484d':'#2fbf71';
+            return h('g',{key:i},h('rect',{x:b.x*1000,y:b.y*1000,width:b.w*1000,height:b.h*1000,fill:'none',stroke:color,strokeWidth:6}),
+              h('text',{x:b.x*1000+6,y:Math.max(30,b.y*1000-8),fill:color,fontSize:30,fontWeight:700},`${shot.classes[b.classId]||b.label} ${Math.round(b.confidence*100)}%`));
+          }))),
+        h('figcaption',{className:shot.accepted?'accepted':'rejected'},h('strong',null,`Botol ${shot.cycleId}: ${shot.accepted?'DITERIMA':'DITOLAK'}`),` — ${shot.reason==='rejected'?`${shot.boxes.filter(b=>isRejected(shot,b)).map(b=>shot.classes[b.classId]).join(', ')} terdeteksi`:REASONS[shot.reason]}`)),
       h('div',{className:'session-log',role:'log','aria-label':'Log aktivitas mesin','aria-live':'polite'},
         logs.length?h('ol',null,logs.slice(0,16).map((line,index)=>h('li',{key:index},line))):h('p',null,'Menunggu aktivitas mesin…')));
   };
